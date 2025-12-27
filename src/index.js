@@ -230,25 +230,32 @@ async function handleList(type, env, ctx, full = false) {
 		let data;
 
 		if (full) {
-			// Fetch all item data in parallel
-			const itemPromises = jsonFiles.map(async (id) => {
-				const itemUrl = `${GITHUB_BASE}/${dirPath}/${id}.json`;
-				const itemResponse = await fetch(itemUrl, {
-					headers: { 'User-Agent': 'ArcRaiders-API/1.0' },
+			// Cloudflare Workers has a 50 subrequest limit, so batch the fetches
+			const BATCH_SIZE = 50;
+			const allItems = [];
+
+			for (let i = 0; i < jsonFiles.length; i += BATCH_SIZE) {
+				const batch = jsonFiles.slice(i, i + BATCH_SIZE);
+				const batchPromises = batch.map(async (id) => {
+					const itemUrl = `${GITHUB_BASE}/${dirPath}/${id}.json`;
+					const itemResponse = await fetch(itemUrl, {
+						headers: { 'User-Agent': 'ArcRaiders-API/1.0' },
+					});
+
+					if (itemResponse.ok) {
+						return await itemResponse.json();
+					}
+					return null;
 				});
 
-				if (itemResponse.ok) {
-					return await itemResponse.json();
-				}
-				return null;
-			});
-
-			const itemsData = await Promise.all(itemPromises);
+				const batchResults = await Promise.all(batchPromises);
+				allItems.push(...batchResults.filter(Boolean));
+			}
 
 			data = {
 				type,
-				count: itemsData.filter(Boolean).length,
-				items: itemsData.filter(Boolean),
+				count: allItems.length,
+				items: allItems,
 			};
 		} else {
 			// Just return IDs and URLs (original behavior)
