@@ -38,9 +38,11 @@ These endpoints let you list everything or get a specific item:
 
 #### Items
 ```bash
-GET /v1/items                  # List all item IDs (490 items)
-GET /v1/items?full=true        # Get ALL items with full data (1 request!)
-GET /v1/items/{item_id}        # Get a specific item
+GET /v1/items                           # List all item IDs (490 items)
+GET /v1/items?full=true                 # Get first 45 items with full data
+GET /v1/items?full=true&limit=20        # Get first 20 items with full data
+GET /v1/items?full=true&offset=45       # Get next 45 items (pagination)
+GET /v1/items/{item_id}                 # Get a specific item
 ```
 
 **Examples:**
@@ -48,8 +50,13 @@ GET /v1/items/{item_id}        # Get a specific item
 # Get just the list of IDs
 curl https://arcdata.mahcks.com/v1/items
 
-# Get all items with complete data in one request
+# Get first 45 items with complete data (respects Cloudflare limits)
 curl https://arcdata.mahcks.com/v1/items?full=true
+
+# Paginate through all items
+curl https://arcdata.mahcks.com/v1/items?full=true&offset=0&limit=45
+curl https://arcdata.mahcks.com/v1/items?full=true&offset=45&limit=45
+curl https://arcdata.mahcks.com/v1/items?full=true&offset=90&limit=45
 
 # Get a specific item
 curl https://arcdata.mahcks.com/v1/items/anvil_i
@@ -120,7 +127,7 @@ Returns the complete JSON data for whatever you requested.
 
 ## Performance Tips
 
-### Use `?full=true` to avoid multiple requests
+### Use `?full=true` with pagination to avoid multiple requests
 
 Instead of making hundreds of requests:
 ```javascript
@@ -131,15 +138,46 @@ const items = await Promise.all(
 );
 ```
 
-Use the `?full=true` parameter:
+Use the `?full=true` parameter with pagination:
 ```javascript
-// ✅ GOOD - Makes 1 request total
-const { items } = await fetch('/v1/items?full=true').then(r => r.json());
+// ✅ GOOD - Fetch all items in pages (11 requests for 490 items)
+async function getAllItems() {
+  let allItems = [];
+  let offset = 0;
+  const limit = 45;
+
+  while (true) {
+    const response = await fetch(`/v1/items?full=true&offset=${offset}&limit=${limit}`);
+    const data = await response.json();
+
+    allItems.push(...data.items);
+
+    // Check if there's more data
+    if (!data.next) break;
+    offset += limit;
+  }
+
+  return allItems;
+}
 ```
 
 **Performance difference:**
 - Without `?full=true`: **491 requests** (~5-10 seconds)
-- With `?full=true`: **1 request** (~500ms)
+- With `?full=true` + pagination: **11 requests** (~2-3 seconds)
+- Each paginated request is cached separately!
+
+**Response includes pagination URLs:**
+```json
+{
+  "type": "items",
+  "total": 490,
+  "count": 45,
+  "offset": 0,
+  "limit": 45,
+  "items": [...],
+  "next": "/v1/items?full=true&offset=45&limit=45"
+}
+```
 
 ## How Caching Works
 

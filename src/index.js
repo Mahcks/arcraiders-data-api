@@ -52,7 +52,9 @@ export default {
 				if (COLLECTION_TYPES[type]) {
 					// Check if user wants full data via ?full=true
 					const full = url.searchParams.get('full') === 'true';
-					return await handleList(type, env, ctx, full);
+					const limit = parseInt(url.searchParams.get('limit')) || undefined;
+					const offset = parseInt(url.searchParams.get('offset')) || 0;
+					return await handleList(type, env, ctx, full, limit, offset);
 				}
 
 				return jsonResponse({ error: `Unknown data type: ${type}` }, 404);
@@ -191,8 +193,10 @@ async function handleGetItem(type, id, env, ctx) {
  * List all items of a type
  * Uses GitHub API to dynamically list directory contents
  * @param {boolean} full - If true, fetch and return full data for all items
+ * @param {number} limit - Max items to return (default: 45 for full, all for list)
+ * @param {number} offset - Skip this many items (for pagination)
  */
-async function handleList(type, env, ctx, full = false) {
+async function handleList(type, env, ctx, full = false, limit = undefined, offset = 0) {
 	if (!COLLECTION_TYPES[type]) {
 		return jsonResponse({ error: `Unknown collection type: ${type}` }, 404);
 	}
@@ -222,43 +226,60 @@ async function handleList(type, env, ctx, full = false) {
 		const files = await githubResponse.json();
 
 		// Filter to only .json files
-		const jsonFiles = files
+		const allJsonFiles = files
 			.filter((f) => f.type === 'file' && f.name.endsWith('.json') && !f.name.startsWith('_'))
 			.map((f) => f.name.replace('.json', ''))
 			.sort((a, b) => a.localeCompare(b));
 
+		const totalItems = allJsonFiles.length;
+
+		// Apply pagination
+		let jsonFiles = allJsonFiles;
+		if (offset > 0) {
+			jsonFiles = jsonFiles.slice(offset);
+		}
+
 		let data;
 
 		if (full) {
-			// Cloudflare Workers has a 50 subrequest limit, so batch the fetches
-			const BATCH_SIZE = 50;
-			const allItems = [];
+			// Cloudflare Workers free tier has 50 subrequest limit
+			// We already used 1 for the GitHub API call, so we have 49 left
+			const MAX_ITEMS = 45; // Leave some buffer
+			const effectiveLimit = limit && limit < MAX_ITEMS ? limit : MAX_ITEMS;
+			const limitedFiles = jsonFiles.slice(0, effectiveLimit);
 
-			for (let i = 0; i < jsonFiles.length; i += BATCH_SIZE) {
-				const batch = jsonFiles.slice(i, i + BATCH_SIZE);
-				const batchPromises = batch.map(async (id) => {
-					const itemUrl = `${GITHUB_BASE}/${dirPath}/${id}.json`;
-					const itemResponse = await fetch(itemUrl, {
-						headers: { 'User-Agent': 'ArcRaiders-API/1.0' },
-					});
-
-					if (itemResponse.ok) {
-						return await itemResponse.json();
-					}
-					return null;
+			const itemPromises = limitedFiles.map(async (id) => {
+				const itemUrl = `${GITHUB_BASE}/${dirPath}/${id}.json`;
+				const itemResponse = await fetch(itemUrl, {
+					headers: { 'User-Agent': 'ArcRaiders-API/1.0' },
 				});
 
-				const batchResults = await Promise.all(batchPromises);
-				allItems.push(...batchResults.filter(Boolean));
-			}
+				if (itemResponse.ok) {
+					return await itemResponse.json();
+				}
+				return null;
+			});
+
+			const itemsData = await Promise.all(itemPromises);
 
 			data = {
 				type,
-				count: allItems.length,
-				items: allItems,
+				total: totalItems,
+				count: itemsData.filter(Boolean).length,
+				offset,
+				limit: effectiveLimit,
+				items: itemsData.filter(Boolean),
 			};
+
+			// Add pagination hints
+			if (offset + effectiveLimit < totalItems) {
+				data.next = `/v1/${type}?full=true&offset=${offset + effectiveLimit}&limit=${effectiveLimit}`;
+			}
+			if (offset > 0) {
+				data.prev = `/v1/${type}?full=true&offset=${Math.max(0, offset - effectiveLimit)}&limit=${effectiveLimit}`;
+			}
 		} else {
-			// Just return IDs and URLs (original behavior)
+			// Just return IDs and URLs (original behavior, no limit)
 			const items = jsonFiles.map((id) => ({
 				id,
 				url: `/v1/${type}/${id}`,
