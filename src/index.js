@@ -204,8 +204,12 @@ async function handleList(type, env, ctx, full = false, limit = undefined, offse
 	const dirPath = COLLECTION_TYPES[type];
 	const githubApiUrl = `https://api.github.com/repos/RaidTheory/arcraiders-data/contents/${dirPath}`;
 
-	// Different cache key for full vs list-only
-	const cacheKeySuffix = full ? '?full=true' : '';
+	// Different cache key for full vs list-only, including pagination params
+	let cacheKeySuffix = '';
+	if (full) {
+		const effectiveLimit = limit && limit < 45 ? limit : 45;
+		cacheKeySuffix = `?full=true&offset=${offset}&limit=${effectiveLimit}`;
+	}
 	const cache = caches.default;
 	const cacheKey = new Request(githubApiUrl + cacheKeySuffix);
 	let response = await cache.match(cacheKey);
