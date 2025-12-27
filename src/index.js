@@ -4,7 +4,8 @@
  */
 
 const GITHUB_BASE = 'https://raw.githubusercontent.com/RaidTheory/arcraiders-data/main';
-const CACHE_TTL = 300; // 5 minutes
+const CACHE_TTL = 3600; // 1 hour - data doesn't change often
+const STALE_WHILE_REVALIDATE = 86400; // 24 hours - serve stale data while fetching fresh
 
 // Define valid data types and their paths
 // For directory-based collections (multiple JSON files in folders)
@@ -30,12 +31,6 @@ export default {
 		const url = new URL(request.url);
 		const path = url.pathname;
 
-		// Enforce HTTPS - redirect HTTP to HTTPS
-		if (url.protocol === 'http:') {
-			const httpsUrl = url.toString().replace('http://', 'https://');
-			return Response.redirect(httpsUrl, 301);
-		}
-
 		// Handle CORS preflight
 		if (request.method === 'OPTIONS') {
 			return handleCors();
@@ -55,7 +50,9 @@ export default {
 
 				// Otherwise try as a collection list
 				if (COLLECTION_TYPES[type]) {
-					return await handleList(type, env, ctx);
+					// Check if user wants full data via ?full=true
+					const full = url.searchParams.get('full') === 'true';
+					return await handleList(type, env, ctx, full);
 				}
 
 				return jsonResponse({ error: `Unknown data type: ${type}` }, 404);
@@ -133,7 +130,7 @@ async function handleSingleFile(type, env, ctx) {
 			status: 200,
 			headers: {
 				'Content-Type': 'application/json',
-				'Cache-Control': `public, max-age=${CACHE_TTL}`,
+				'Cache-Control': `public, max-age=${CACHE_TTL}, stale-while-revalidate=${STALE_WHILE_REVALIDATE}`,
 			},
 		});
 
@@ -179,7 +176,7 @@ async function handleGetItem(type, id, env, ctx) {
 			status: 200,
 			headers: {
 				'Content-Type': 'application/json',
-				'Cache-Control': `public, max-age=${CACHE_TTL}`,
+				'Cache-Control': `public, max-age=${CACHE_TTL}, stale-while-revalidate=${STALE_WHILE_REVALIDATE}`,
 			},
 		});
 
@@ -193,8 +190,9 @@ async function handleGetItem(type, id, env, ctx) {
 /**
  * List all items of a type
  * Uses GitHub API to dynamically list directory contents
+ * @param {boolean} full - If true, fetch and return full data for all items
  */
-async function handleList(type, env, ctx) {
+async function handleList(type, env, ctx, full = false) {
 	if (!COLLECTION_TYPES[type]) {
 		return jsonResponse({ error: `Unknown collection type: ${type}` }, 404);
 	}
@@ -202,13 +200,14 @@ async function handleList(type, env, ctx) {
 	const dirPath = COLLECTION_TYPES[type];
 	const githubApiUrl = `https://api.github.com/repos/RaidTheory/arcraiders-data/contents/${dirPath}`;
 
-	// Check cache first
+	// Different cache key for full vs list-only
+	const cacheKeySuffix = full ? '?full=true' : '';
 	const cache = caches.default;
-	const cacheKey = new Request(githubApiUrl);
+	const cacheKey = new Request(githubApiUrl + cacheKeySuffix);
 	let response = await cache.match(cacheKey);
 
 	if (!response) {
-		// Fetch from GitHub API
+		// Fetch from GitHub API to get file list
 		const githubResponse = await fetch(githubApiUrl, {
 			headers: {
 				'User-Agent': 'ArcRaiders-API/1.0',
@@ -222,24 +221,52 @@ async function handleList(type, env, ctx) {
 
 		const files = await githubResponse.json();
 
-		// Filter to only .json files and extract IDs
-		const items = files
+		// Filter to only .json files
+		const jsonFiles = files
 			.filter((f) => f.type === 'file' && f.name.endsWith('.json') && !f.name.startsWith('_'))
-			.map((f) => ({
-				id: f.name.replace('.json', ''),
-				url: `/v1/${type}/${f.name.replace('.json', '')}`,
-			}))
-			.sort((a, b) => a.id.localeCompare(b.id));
+			.map((f) => f.name.replace('.json', ''))
+			.sort((a, b) => a.localeCompare(b));
 
-		const data = {
-			type,
-			count: items.length,
-			items,
-		};
+		let data;
+
+		if (full) {
+			// Fetch all item data in parallel
+			const itemPromises = jsonFiles.map(async (id) => {
+				const itemUrl = `${GITHUB_BASE}/${dirPath}/${id}.json`;
+				const itemResponse = await fetch(itemUrl, {
+					headers: { 'User-Agent': 'ArcRaiders-API/1.0' },
+				});
+
+				if (itemResponse.ok) {
+					return await itemResponse.json();
+				}
+				return null;
+			});
+
+			const itemsData = await Promise.all(itemPromises);
+
+			data = {
+				type,
+				count: itemsData.filter(Boolean).length,
+				items: itemsData.filter(Boolean),
+			};
+		} else {
+			// Just return IDs and URLs (original behavior)
+			const items = jsonFiles.map((id) => ({
+				id,
+				url: `/v1/${type}/${id}`,
+			}));
+
+			data = {
+				type,
+				count: items.length,
+				items,
+			};
+		}
 
 		// Create cacheable response
 		response = jsonResponse(data);
-		response.headers.set('Cache-Control', `public, max-age=${CACHE_TTL}`);
+		response.headers.set('Cache-Control', `public, max-age=${CACHE_TTL}, stale-while-revalidate=${STALE_WHILE_REVALIDATE}`);
 
 		// Store in cache (non-blocking)
 		ctx.waitUntil(cache.put(cacheKey, response.clone()));

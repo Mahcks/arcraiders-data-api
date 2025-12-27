@@ -8,7 +8,7 @@ A simple REST API to get ARC Raiders game data. Need info about items, weapons, 
 
 - **Fast & Global**: Uses Cloudflare's global network - fast responses no matter where you are
 - **Just JSON**: Returns the raw data directly, no extra processing
-- **Cached**: Data is cached for 5 minutes to keep things speedy
+- **Smart Caching**: 1-hour cache with stale-while-revalidate for always-fast responses
 - **Secure**: HTTPS only, with standard security headers
 - **CORS Enabled**: Works from browsers, no cross-origin issues
 - **Auto-Updated**: Automatically finds new data files as they're added
@@ -38,40 +38,51 @@ These endpoints let you list everything or get a specific item:
 
 #### Items
 ```bash
-GET /v1/items              # List all items (490 items)
-GET /v1/items/{item_id}    # Get a specific item
+GET /v1/items                  # List all item IDs (490 items)
+GET /v1/items?full=true        # Get ALL items with full data (1 request!)
+GET /v1/items/{item_id}        # Get a specific item
 ```
 
-**Example:**
+**Examples:**
 ```bash
+# Get just the list of IDs
+curl https://arcdata.mahcks.com/v1/items
+
+# Get all items with complete data in one request
+curl https://arcdata.mahcks.com/v1/items?full=true
+
+# Get a specific item
 curl https://arcdata.mahcks.com/v1/items/anvil_i
 ```
 
 #### Hideout Modules
 ```bash
-GET /v1/hideout                  # List all hideout modules (9 modules)
+GET /v1/hideout                  # List all hideout module IDs
+GET /v1/hideout?full=true        # Get ALL modules with full data
 GET /v1/hideout/{module_id}      # Get a specific module
 ```
 
 **Example:**
 ```bash
-curl https://arcdata.mahcks.com/v1/hideout/weapon_bench
+curl https://arcdata.mahcks.com/v1/hideout?full=true
 ```
 
 #### Quests
 ```bash
-GET /v1/quests              # List all quests (72 quests)
-GET /v1/quests/{quest_id}   # Get a specific quest
+GET /v1/quests                   # List all quest IDs
+GET /v1/quests?full=true         # Get ALL quests with full data
+GET /v1/quests/{quest_id}        # Get a specific quest
 ```
 
 **Example:**
 ```bash
-curl https://arcdata.mahcks.com/v1/quests/power_out
+curl https://arcdata.mahcks.com/v1/quests?full=true
 ```
 
 #### Map Events
 ```bash
-GET /v1/map-events                # List all map events
+GET /v1/map-events                # List all map event IDs
+GET /v1/map-events?full=true      # Get ALL events with full data
 GET /v1/map-events/{event_id}     # Get a specific event
 ```
 
@@ -107,18 +118,48 @@ Returns the complete JSON data for whatever you requested.
 }
 ```
 
+## Performance Tips
+
+### Use `?full=true` to avoid multiple requests
+
+Instead of making hundreds of requests:
+```javascript
+// ❌ BAD - Makes 491 requests (1 for list + 490 for each item)
+const list = await fetch('/v1/items').then(r => r.json());
+const items = await Promise.all(
+  list.items.map(item => fetch(item.url).then(r => r.json()))
+);
+```
+
+Use the `?full=true` parameter:
+```javascript
+// ✅ GOOD - Makes 1 request total
+const { items } = await fetch('/v1/items?full=true').then(r => r.json());
+```
+
+**Performance difference:**
+- Without `?full=true`: **491 requests** (~5-10 seconds)
+- With `?full=true`: **1 request** (~500ms)
+
 ## How Caching Works
 
-The API caches data for 5 minutes to make things faster:
+The API uses smart caching with stale-while-revalidate:
 
 1. **First Request**: Gets data from GitHub and caches it
-2. **Next Requests**: Served from cache (super fast)
-3. **After 5 Minutes**: Cache expires, next request gets fresh data from GitHub
+2. **Next Hour**: Served from cache (instant)
+3. **After 1 Hour**: Serves cached data immediately while fetching fresh data in the background
+4. **Stale Tolerance**: Will serve cached data up to 24 hours old if GitHub is slow/unavailable
 
-This means:
-- 🚀 Really fast responses (data is cached close to you)
-- 🔄 Fresh data (never more than 5 minutes old)
-- 💰 Efficient (doesn't hammer GitHub's API)
+**What this means:**
+- 🚀 Always instant responses (no waiting for GitHub)
+- 🔄 Fresh data (usually within 1 hour)
+- 💪 Resilient (works even if GitHub is down)
+- 💰 Efficient (minimal GitHub API usage)
+
+**Cache Duration:**
+- Fresh: 1 hour
+- Stale-while-revalidate: 24 hours
+- The `?full=true` response is also cached separately
 
 ## Security
 
